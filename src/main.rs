@@ -1,6 +1,6 @@
 use std::convert::TryFrom;
 
-use rust_decimal::Decimal;
+use rust_decimal::{prelude::Zero, Decimal};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
@@ -12,6 +12,11 @@ enum InputFormatError {
 enum ProcessingError {
     TransactionOnLockedAccount,
     NotEnoughMoneyForWithdrawal,
+    TryingToDisputeUnknownTransaction,
+    WrongClientInDispute,
+    TransactionIsAlreadyInDispute,
+    ResolvedTransactionWasNotInDispute,
+    ChargedBackWasNotInDispute,
 }
 
 #[derive(Debug)]
@@ -55,6 +60,15 @@ struct NewTransaction {
     #[serde(alias = "tx")]
     transaction_id: TransactionID,
     amount: Decimal,
+}
+
+impl NewTransaction {
+    fn amount_change(&self) -> Decimal {
+        match self.transaction_type {
+            TransactionType::Deposit => self.amount,
+            TransactionType::Withdrawal => -self.amount,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -186,8 +200,10 @@ impl Account {
 
 #[derive(Default)]
 struct TransactionProcessor {
+    // TODO: disallow double dispute
     transactions: std::collections::HashMap<TransactionID, NewTransaction>,
     accounts: std::collections::HashMap<ClientID, Account>,
+    in_dispute: std::collections::HashSet<TransactionID>,
 }
 
 impl TransactionProcessor {
@@ -223,7 +239,67 @@ impl TransactionProcessor {
                     .insert(transaction.transaction_id, transaction.clone());
                 Ok(())
             }
-            Record::Amendment(_amendment) => todo!("Implement amendments"),
+            Record::Amendment(amendment) => {
+                let transaction = match self.transactions.get(&amendment.transaction_id) {
+                    Some(transaction) => transaction,
+                    None => {
+                        return Err(Error::Processing(
+                            ProcessingError::TryingToDisputeUnknownTransaction,
+                        ))
+                    }
+                };
+                if transaction.client_id != amendment.client_id {
+                    return Err(Error::Processing(ProcessingError::WrongClientInDispute));
+                }
+
+                let mut client_account = self
+                    .accounts
+                    .get(&amendment.client_id)
+                    .cloned()
+                    .expect("Client account must be present for recognised transactions");
+
+                match amendment.amendment_type {
+                    AmendmentType::Dispute => {
+                        // TODO: test for double dispute
+                        if !self.in_dispute.insert(amendment.transaction_id) {
+                            return Err(Error::Processing(
+                                ProcessingError::TransactionIsAlreadyInDispute,
+                            ));
+                        }
+
+                        // TODO: test both withdrawal and deposit dispute
+                        client_account.available -= transaction.amount;
+                        client_account.held += transaction.amount;
+                    }
+                    AmendmentType::Resolve => {
+                        if !self.in_dispute.remove(&amendment.transaction_id) {
+                            return Err(Error::Processing(
+                                ProcessingError::ResolvedTransactionWasNotInDispute,
+                            ));
+                        }
+
+                        client_account.available += transaction.amount;
+                        client_account.held -= transaction.amount;
+                    }
+                    AmendmentType::Chargeback => {
+                        if !self.in_dispute.remove(&amendment.transaction_id) {
+                            return Err(Error::Processing(
+                                ProcessingError::ChargedBackWasNotInDispute,
+                            ));
+                        }
+
+                        client_account.held -= transaction.amount;
+                        client_account.locked = true;
+                    }
+                }
+
+                assert!(
+                    client_account.held >= Decimal::zero(),
+                    "We don't expect amount held to go negative in any scenario"
+                );
+                self.accounts.insert(amendment.client_id, client_account);
+                Ok(())
+            }
         }
     }
 }
