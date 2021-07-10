@@ -8,17 +8,25 @@ enum InputFormatError {
     MissingAmount,
 }
 
-enum Error {
-    InputFormat(InputFormatError),
+#[derive(Debug)]
+enum ProcessingError {
+    TransactionOnLockedAccount,
+    NotEnoughMoneyForWithdrawal,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug)]
+enum Error {
+    InputFormat(InputFormatError),
+    Processing(ProcessingError),
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(transparent)]
 struct TransactionID {
     id: u32,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(transparent)]
 struct ClientID {
     id: u16,
@@ -75,7 +83,6 @@ enum RawRecordType {
 }
 
 #[derive(Debug, Deserialize)]
-
 struct RawRecord {
     #[serde(alias = "type")]
     record_type: RawRecordType,
@@ -157,6 +164,63 @@ impl std::iter::Iterator for CsvReader {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct Account {
+    available: Decimal,
+    held: Decimal,
+    locked: bool,
+}
+
+impl Account {
+    fn total(&self) -> Decimal {
+        self.available + self.held
+    }
+}
+
+#[derive(Default)]
+struct TransactionProcessor {
+    transactions: std::collections::HashMap<TransactionID, NewTransaction>,
+    accounts: std::collections::HashMap<ClientID, Account>,
+}
+
+impl TransactionProcessor {
+    fn process(&mut self, record: &Record) -> Result<(), Error> {
+        // TODO: test for challenging the withdrawal that wasn't possible
+        match record {
+            Record::Transaction(transaction) => {
+                let mut client_account = self
+                    .accounts
+                    .get(&transaction.client_id)
+                    .cloned()
+                    .unwrap_or_default();
+
+                if client_account.locked {
+                    return Err(Error::Processing(
+                        ProcessingError::TransactionOnLockedAccount,
+                    ));
+                }
+                match transaction.transaction_type {
+                    TransactionType::Deposit => client_account.available += transaction.amount,
+                    TransactionType::Withdrawal => {
+                        if client_account.available >= transaction.amount {
+                            client_account.available -= transaction.amount;
+                        } else {
+                            return Err(Error::Processing(
+                                ProcessingError::NotEnoughMoneyForWithdrawal,
+                            ));
+                        }
+                    }
+                }
+                self.accounts.insert(transaction.client_id, client_account);
+                self.transactions
+                    .insert(transaction.transaction_id, transaction.clone());
+                Ok(())
+            }
+            Record::Amendment(_amendment) => todo!("Implement amendments"),
+        }
+    }
+}
+
 fn print_usage() {
     eprintln!("Usage:");
     eprintln!("  tiny-transaction-processor <path-to-transaction-file>");
@@ -177,8 +241,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Got file {}", &filename);
 
         let csv_records = CsvReader::new(&filename)?;
+        let mut transaction_processor = TransactionProcessor::default();
         for record in csv_records.into_iter() {
             eprintln!("Banana: {:#?}", &record);
+            if let Err(err) = transaction_processor.process(&record) {
+                eprintln!("Transaction processing error: {:?}", &err);
+            }
+        }
+
+        // TODO: proper CSV output
+        for acc in transaction_processor.accounts.iter() {
+            println!("{:?}", acc);
         }
     }
 
