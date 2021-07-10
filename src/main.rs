@@ -32,6 +32,13 @@ struct ClientID {
     id: u16,
 }
 
+impl ClientID {
+    #[cfg(test)]
+    fn new(id: u16) -> ClientID {
+        ClientID { id }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum TransactionType {
@@ -256,4 +263,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[derive(Default)]
+    struct TransactionGenerator {
+        transaction_count: u32,
+    }
+
+    impl TransactionGenerator {
+        fn adjust_amount(&mut self, client_id: ClientID, amount: Decimal) -> Record {
+            assert_ne!(amount, dec!(0), "We don't expect zero amount transactions");
+
+            self.transaction_count += 1;
+            let transaction_id = TransactionID {
+                id: self.transaction_count,
+            };
+            let transaction_type = if amount < dec!(0) {
+                TransactionType::Withdrawal
+            } else {
+                TransactionType::Deposit
+            };
+            Record::Transaction(NewTransaction {
+                transaction_id,
+                client_id,
+                amount: amount.abs(),
+                transaction_type,
+            })
+        }
+    }
+
+    #[test]
+    fn test_excessive_withdrawal() {
+        let mut generator = TransactionGenerator::default();
+        let mut processor = TransactionProcessor::default();
+
+        assert!(processor
+            .process(&generator.adjust_amount(ClientID::new(23), dec!(2)))
+            .is_ok());
+        assert!(processor
+            .process(&generator.adjust_amount(ClientID::new(23), dec!(-3)))
+            .is_err());
+
+        assert_eq!(
+            processor
+                .accounts
+                .get(&ClientID::new(23))
+                .unwrap()
+                .available,
+            dec!(2)
+        )
+    }
 }
