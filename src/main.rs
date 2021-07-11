@@ -247,7 +247,6 @@ struct TransactionProcessor {
 
 impl TransactionProcessor {
     fn process(&mut self, record: &Record) -> Result<(), Error> {
-        // TODO: test for challenging the withdrawal that wasn't possible
         match record {
             Record::Transaction(transaction) => {
                 let mut client_account = self
@@ -644,5 +643,26 @@ mod test {
         assert!(processor
             .process(&generator.dispute(withdrawal.transaction_id()))
             .is_err());
+    }
+
+    #[test]
+    fn test_disputing_a_failed_withdrawal() {
+        let mut generator = TransactionGenerator::default();
+        let mut processor = TransactionProcessor::default();
+
+        let client_id = ClientID::new(23);
+        let initial_state = Account {
+            available: dec!(15),
+            ..Account::default()
+        };
+        processor.accounts.insert(client_id, initial_state.clone());
+
+        // Trying to deposit or withdraw from a locked account fails
+        let excessive_withdrawal = generator.adjust_amount(client_id, dec!(-16));
+        assert!(processor.process(&excessive_withdrawal).is_err());
+
+        let dispute = generator.dispute(excessive_withdrawal.transaction_id());
+        assert!(processor.process(&dispute).is_err());
+        assert_eq!(initial_state, *processor.accounts.get(&client_id).unwrap());
     }
 }
