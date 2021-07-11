@@ -9,12 +9,7 @@ enum InputFormatError {
 }
 
 impl std::fmt::Display for InputFormatError {
-    // This trait requires `fmt` with this exact signature.
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // Write strictly the first element into the supplied output
-        // stream: `f`. Returns `fmt::Result` which indicates whether the
-        // operation succeeded or failed. Note that `write!` uses syntax which
-        // is very similar to `println!`.
         write!(f, "{:?}", self)
     }
 }
@@ -166,17 +161,24 @@ impl std::convert::TryFrom<RawRecord> for Record {
     }
 }
 
-struct CsvReader {
-    csv_reader: csv::Reader<std::fs::File>,
+struct CsvReader<CsvInput: std::io::Read> {
+    csv_reader: csv::Reader<CsvInput>,
 }
 
-impl CsvReader {
-    fn new(filepath: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
-        csv::ReaderBuilder::new()
-            .trim(csv::Trim::All)
-            .from_path(filepath)
-            .map(|reader| Self { csv_reader: reader })
-            .map_err(|err| err.into())
+impl CsvReader<std::fs::File> {
+    fn from_path(filepath: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(CsvReader::from_reader(std::fs::File::open(filepath)?))
+    }
+}
+
+impl<CsvInput: std::io::Read> CsvReader<CsvInput> {
+    fn from_reader(input: CsvInput) -> Self {
+        Self {
+            csv_reader: csv::ReaderBuilder::new()
+                .trim(csv::Trim::All)
+                .flexible(true)
+                .from_reader(input),
+        }
     }
 
     fn get_next_record(&mut self) -> Result<Option<Record>, Box<dyn std::error::Error>> {
@@ -192,7 +194,7 @@ impl CsvReader {
     }
 }
 
-impl std::iter::Iterator for CsvReader {
+impl<CsvInput: std::io::Read> std::iter::Iterator for CsvReader<CsvInput> {
     type Item = Record;
 
     // TODO: don't fail on the first error and eat out the rest of the file
@@ -365,7 +367,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let filename = args.skip(1).next().unwrap();
         eprintln!("Got file {}", &filename); // TODO: replace with log trace
 
-        let csv_records = CsvReader::new(&std::path::Path::new(&filename))?;
+        let csv_records = CsvReader::from_path(&std::path::Path::new(&filename))?;
         let mut transaction_processor = TransactionProcessor::default();
         for record in csv_records.into_iter() {
             if let Err(err) = transaction_processor.process(&record) {
@@ -461,19 +463,16 @@ mod test {
         let mut generator = TransactionGenerator::default();
         let mut processor = TransactionProcessor::default();
 
+        let client_id = ClientID::new(23);
         assert!(processor
-            .process(&generator.adjust_amount(ClientID::new(23), dec!(2)))
+            .process(&generator.adjust_amount(client_id, dec!(2)))
             .is_ok());
         assert!(processor
-            .process(&generator.adjust_amount(ClientID::new(23), dec!(-3)))
+            .process(&generator.adjust_amount(client_id, dec!(-3)))
             .is_err());
 
         assert_eq!(
-            processor
-                .accounts
-                .get(&ClientID::new(23))
-                .unwrap()
-                .available,
+            processor.accounts.get(&client_id).unwrap().available,
             dec!(2)
         )
     }
@@ -664,5 +663,48 @@ mod test {
         let dispute = generator.dispute(excessive_withdrawal.transaction_id());
         assert!(processor.process(&dispute).is_err());
         assert_eq!(initial_state, *processor.accounts.get(&client_id).unwrap());
+    }
+
+    #[test]
+    fn transaction_with_the_same_id_isnt_allowed() {
+        // TODO:
+
+        // TODO: even after chargeback
+    }
+
+    #[test]
+    fn test_csv_parsing_and_processing() {
+        let input_csv = r#"type, client, tx, amount
+            deposit,      1,  1,    0.0010
+            deposit,      1,  2,    0.0020
+            deposit,      1,  3,    0.0030
+            withdrawal,   1,  4,    0.0050
+            deposit,      2,  5,    12.0
+            withdrawal,   2,  6,    40.0
+            dispute,      2,  5
+        "#;
+        let csv_reader = CsvReader::from_reader(input_csv.as_bytes());
+
+        let mut processor = TransactionProcessor::default();
+        for record in csv_reader {
+            processor.process(&record).ok();
+        }
+
+        assert_eq!(
+            *processor.accounts.get(&ClientID::new(1)).unwrap(),
+            Account {
+                available: dec!(0.001),
+                ..Default::default()
+            }
+        );
+
+        assert_eq!(
+            *processor.accounts.get(&ClientID::new(2)).unwrap(),
+            Account {
+                available: Decimal::zero(),
+                held: dec!(12),
+                locked: false
+            }
+        );
     }
 }
