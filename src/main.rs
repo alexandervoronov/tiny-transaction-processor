@@ -30,6 +30,7 @@ enum ProcessingError {
     TransactionIsAlreadyInDispute,
     ResolvedTransactionWasNotInDispute,
     ChargedBackWasNotInDispute,
+    DisputingAlreadyChargedBackTransaction,
 }
 
 #[derive(Debug)]
@@ -184,7 +185,10 @@ impl CsvReader {
             .deserialize::<RawRecord>()
             .next()
             .transpose()?;
-        next_record.map(Record::try_from).transpose().map_err(|err| err.into())
+        next_record
+            .map(Record::try_from)
+            .transpose()
+            .map_err(|err| err.into())
     }
 }
 
@@ -235,10 +239,10 @@ impl<'a> Serialize for AccountRecord<'a> {
 
 #[derive(Default)]
 struct TransactionProcessor {
-    // TODO: disallow double chargeback of the same transaction
     transactions: std::collections::HashMap<TransactionID, NewTransaction>,
     accounts: std::collections::HashMap<ClientID, Account>,
     in_dispute: std::collections::HashSet<TransactionID>,
+    charged_back: std::collections::HashSet<TransactionID>,
 }
 
 impl TransactionProcessor {
@@ -300,6 +304,11 @@ impl TransactionProcessor {
                                 ProcessingError::TransactionIsAlreadyInDispute,
                             ));
                         }
+                        if self.charged_back.contains(&amendment.transaction_id) {
+                            return Err(Error::Processing(
+                                ProcessingError::DisputingAlreadyChargedBackTransaction,
+                            ));
+                        }
 
                         client_account.available -= transaction.amount;
                         client_account.held += transaction.amount;
@@ -323,6 +332,7 @@ impl TransactionProcessor {
 
                         client_account.held -= transaction.amount;
                         client_account.locked = true;
+                        self.charged_back.insert(amendment.transaction_id);
                     }
                 }
 
@@ -433,6 +443,18 @@ mod test {
                 amendment_type: AmendmentType::Resolve,
             })
         }
+
+        fn chargeback(&mut self, transaction_id: TransactionID) -> Record {
+            let client_id = *self
+                .clients_of_transactions
+                .get(&transaction_id)
+                .expect("Unknown transaction");
+            Record::Amendment(TransactionAmendment {
+                client_id,
+                transaction_id,
+                amendment_type: AmendmentType::Chargeback,
+            })
+        }
     }
 
     #[test]
@@ -535,6 +557,7 @@ mod test {
 
         // Resolving a transaction that is not in dispute is not alllowed
         assert!(processor.process(&resolve_deposit).is_err());
+        assert_eq!(initial_state, *processor.accounts.get(&client_id).unwrap());
 
         // Resolving a disputed transaction works as expected
         assert!(processor.process(&dispute_deposit).is_ok());
@@ -544,5 +567,51 @@ mod test {
         // Second resolve of the same transaction is an error and doesn't change the state
         assert!(processor.process(&resolve_deposit).is_err());
         assert_eq!(initial_state, *processor.accounts.get(&client_id).unwrap());
+    }
+
+    #[test]
+    fn test_chargeback() {
+        let mut generator = TransactionGenerator::default();
+        let mut processor = TransactionProcessor::default();
+
+        let client_id = ClientID::new(23);
+        let deposit = generator.adjust_amount(client_id, dec!(10));
+        let withdrawal = generator.adjust_amount(client_id, dec!(-7));
+        assert!(processor.process(&deposit).is_ok());
+        assert!(processor.process(&withdrawal).is_ok());
+
+        let initial_state = processor.accounts.get(&client_id).unwrap().clone();
+
+        let dispute_deposit = generator.dispute(deposit.transaction_id());
+        let chargeback_deposit = generator.chargeback(deposit.transaction_id());
+
+        // Charging back a transaction that is not in dispute is not allowed
+        assert!(processor.process(&chargeback_deposit).is_err());
+        assert_eq!(initial_state, *processor.accounts.get(&client_id).unwrap());
+
+        // Charging back a transaction in dispute works as expected
+        assert!(processor.process(&dispute_deposit).is_ok());
+        assert!(processor.process(&chargeback_deposit).is_ok());
+        let state_after_chargeback = processor.accounts.get(&client_id).unwrap().clone();
+        assert_eq!(state_after_chargeback.available, dec!(-7));
+        assert_eq!(state_after_chargeback.held, Decimal::zero());
+        assert!(state_after_chargeback.locked);
+
+        // Re-disputing a charged back transaction is not allowed to prevent double chargeback
+        assert!(processor.process(&dispute_deposit).is_err());
+        assert_eq!(
+            state_after_chargeback,
+            *processor.accounts.get(&client_id).unwrap()
+        );
+
+        // Disputing and charging back other transactions still works as expected
+        let dispute_withdrawal = generator.dispute(withdrawal.transaction_id());
+        let chargeback_withdrawal = generator.chargeback(withdrawal.transaction_id());
+        assert!(processor.process(&dispute_withdrawal).is_ok());
+        assert!(processor.process(&chargeback_withdrawal).is_ok());
+        let state_after_both_chargebacks = processor.accounts.get(&client_id).unwrap().clone();
+        assert_eq!(state_after_both_chargebacks.available, dec!(-14));
+        assert_eq!(state_after_both_chargebacks.held, Decimal::zero());
+        assert!(state_after_both_chargebacks.locked);
     }
 }
