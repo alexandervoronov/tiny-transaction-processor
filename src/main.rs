@@ -96,6 +96,15 @@ enum Record {
     Amendment(TransactionAmendment),
 }
 
+impl Record {
+    fn transaction_id(&self) -> TransactionID {
+        match self {
+            Record::Transaction(transaction) => transaction.transaction_id,
+            Record::Amendment(amendment) => amendment.transaction_id,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum RawRecordType {
@@ -185,7 +194,7 @@ impl std::iter::Iterator for CsvReader {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Account {
     available: Decimal,
     held: Decimal,
@@ -198,6 +207,7 @@ impl Account {
     }
 }
 
+// TODO: make it hold refs
 #[derive(Debug, Clone)]
 struct AccountRecord {
     client_id: ClientID,
@@ -349,9 +359,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let csv_records = CsvReader::new(&filename)?;
         let mut transaction_processor = TransactionProcessor::default();
         for record in csv_records.into_iter() {
-            eprintln!("Banana: {:#?}", &record);
             if let Err(err) = transaction_processor.process(&record) {
-                eprintln!("Transaction processing error: {:?}", &err);
+                eprintln!("Transaction [{:?}] processing error: {:?}", &record, &err);
             }
         }
 
@@ -374,6 +383,7 @@ mod test {
     #[derive(Default)]
     struct TransactionGenerator {
         transaction_count: u32,
+        clients_of_transactions: std::collections::HashMap<TransactionID, ClientID>,
     }
 
     impl TransactionGenerator {
@@ -389,11 +399,26 @@ mod test {
             } else {
                 TransactionType::Deposit
             };
+
+            self.clients_of_transactions
+                .insert(transaction_id, client_id);
             Record::Transaction(NewTransaction {
                 transaction_id,
                 client_id,
                 amount: amount.abs(),
                 transaction_type,
+            })
+        }
+
+        fn dispute(&mut self, transaction_id: TransactionID) -> Record {
+            let client_id = *self
+                .clients_of_transactions
+                .get(&transaction_id)
+                .expect("Unknown transaction");
+            Record::Amendment(TransactionAmendment {
+                client_id,
+                transaction_id,
+                amendment_type: AmendmentType::Dispute,
             })
         }
     }
@@ -418,5 +443,53 @@ mod test {
                 .available,
             dec!(2)
         )
+    }
+
+    #[test]
+    fn test_dispute() {
+        let mut generator = TransactionGenerator::default();
+        let mut processor = TransactionProcessor::default();
+
+        let client_id = ClientID::new(23);
+        let deposit = generator.adjust_amount(client_id, dec!(10));
+        let withdrawal = generator.adjust_amount(client_id, dec!(-7));
+        assert!(processor.process(&deposit).is_ok());
+        assert!(processor.process(&withdrawal).is_ok());
+
+        let initial_state = processor.accounts.get(&client_id).cloned();
+        assert!(initial_state.is_some(), "Client account must exist");
+
+        // Dispute with wrong client id is rejected and doesn't change the state
+        let dispute_with_wrong_client = Record::Amendment(TransactionAmendment {
+            amendment_type: AmendmentType::Dispute,
+            client_id: ClientID::new(72),
+            transaction_id: deposit.transaction_id(),
+        });
+
+        assert!(processor.process(&dispute_with_wrong_client).is_err());
+        assert_eq!(processor.accounts.get(&client_id).cloned(), initial_state);
+
+        // Dispute is handled as expected
+        let deposit_dispute = generator.dispute(deposit.transaction_id());
+        assert!(processor.process(&deposit_dispute).is_ok());
+
+        let state_in_dispute = processor.accounts.get(&client_id).unwrap().clone();
+        assert_eq!(state_in_dispute.available, dec!(-7));
+        assert_eq!(state_in_dispute.held, dec!(10));
+        assert!(!state_in_dispute.locked);
+
+        // Double dispute is rejected and state remains the same
+        assert!(processor.process(&deposit_dispute).is_err());
+        let state_after_double_dispute = processor.accounts.get(&client_id).unwrap().clone();
+        assert_eq!(state_in_dispute, state_after_double_dispute);
+
+        // Having two transactions in dispute is okay and reflects correctly on the client account
+        let withdrawal_dispute = generator.dispute(withdrawal.transaction_id());
+        assert!(processor.process(&withdrawal_dispute).is_ok());
+        let state_with_two_disputes = processor.accounts.get(&client_id).unwrap().clone();
+        // Initial total was 3, disputing 17 brings us to -14
+        assert_eq!(state_with_two_disputes.available, dec!(-14)); 
+        assert_eq!(state_with_two_disputes.held, dec!(17));
+        assert!(!state_with_two_disputes.locked);
     }
 }
