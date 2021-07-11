@@ -31,6 +31,13 @@ struct TransactionID {
     id: u32,
 }
 
+impl TransactionID {
+    #[cfg(test)]
+    fn new(id: u32) -> TransactionID {
+        TransactionID { id }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(transparent)]
 struct ClientID {
@@ -62,15 +69,6 @@ struct NewTransaction {
     amount: Decimal,
 }
 
-impl NewTransaction {
-    fn amount_change(&self) -> Decimal {
-        match self.transaction_type {
-            TransactionType::Deposit => self.amount,
-            TransactionType::Withdrawal => -self.amount,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum AmendmentType {
@@ -97,6 +95,7 @@ enum Record {
 }
 
 impl Record {
+    #[cfg(test)]
     fn transaction_id(&self) -> TransactionID {
         match self {
             Record::Transaction(transaction) => transaction.transaction_id,
@@ -215,10 +214,7 @@ struct AccountRecord {
 }
 
 impl Serialize for AccountRecord {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
 
         let mut state = serializer.serialize_struct("AccountRecord", 5)?;
@@ -233,7 +229,7 @@ impl Serialize for AccountRecord {
 
 #[derive(Default)]
 struct TransactionProcessor {
-    // TODO: disallow double dispute
+    // TODO: disallow double chargeback of the same transaction
     transactions: std::collections::HashMap<TransactionID, NewTransaction>,
     accounts: std::collections::HashMap<ClientID, Account>,
     in_dispute: std::collections::HashSet<TransactionID>,
@@ -421,6 +417,18 @@ mod test {
                 amendment_type: AmendmentType::Dispute,
             })
         }
+
+        fn resolve(&mut self, transaction_id: TransactionID) -> Record {
+            let client_id = *self
+                .clients_of_transactions
+                .get(&transaction_id)
+                .expect("Unknown transaction");
+            Record::Amendment(TransactionAmendment {
+                client_id,
+                transaction_id,
+                amendment_type: AmendmentType::Resolve,
+            })
+        }
     }
 
     #[test]
@@ -469,6 +477,18 @@ mod test {
         assert!(processor.process(&dispute_with_wrong_client).is_err());
         assert_eq!(processor.accounts.get(&client_id).cloned(), initial_state);
 
+        // Dispute with unknown transaction id is rejected and doesn't change the state
+        let dispute_of_non_existent_transaction = Record::Amendment(TransactionAmendment {
+            amendment_type: AmendmentType::Dispute,
+            client_id,
+            transaction_id: TransactionID::new(42),
+        });
+
+        assert!(processor
+            .process(&dispute_of_non_existent_transaction)
+            .is_err());
+        assert_eq!(processor.accounts.get(&client_id).cloned(), initial_state);
+
         // Dispute is handled as expected
         let deposit_dispute = generator.dispute(deposit.transaction_id());
         assert!(processor.process(&deposit_dispute).is_ok());
@@ -488,8 +508,37 @@ mod test {
         assert!(processor.process(&withdrawal_dispute).is_ok());
         let state_with_two_disputes = processor.accounts.get(&client_id).unwrap().clone();
         // Initial total was 3, disputing 17 brings us to -14
-        assert_eq!(state_with_two_disputes.available, dec!(-14)); 
+        assert_eq!(state_with_two_disputes.available, dec!(-14));
         assert_eq!(state_with_two_disputes.held, dec!(17));
         assert!(!state_with_two_disputes.locked);
+    }
+
+    #[test]
+    fn test_resolve() {
+        let mut generator = TransactionGenerator::default();
+        let mut processor = TransactionProcessor::default();
+
+        let client_id = ClientID::new(23);
+        let deposit = generator.adjust_amount(client_id, dec!(10));
+        let withdrawal = generator.adjust_amount(client_id, dec!(-7));
+        assert!(processor.process(&deposit).is_ok());
+        assert!(processor.process(&withdrawal).is_ok());
+
+        let initial_state = processor.accounts.get(&client_id).unwrap().clone();
+
+        let dispute_deposit = generator.dispute(deposit.transaction_id());
+        let resolve_deposit = generator.resolve(deposit.transaction_id());
+
+        // Resolving a transaction that is not in dispute is not alllowed
+        assert!(processor.process(&resolve_deposit).is_err());
+
+        // Resolving a disputed transaction works as expected
+        assert!(processor.process(&dispute_deposit).is_ok());
+        assert!(processor.process(&resolve_deposit).is_ok());
+        assert_eq!(initial_state, *processor.accounts.get(&client_id).unwrap());
+
+        // Second resolve of the same transaction is an error and doesn't change the state
+        assert!(processor.process(&resolve_deposit).is_err());
+        assert_eq!(initial_state, *processor.accounts.get(&client_id).unwrap());
     }
 }
