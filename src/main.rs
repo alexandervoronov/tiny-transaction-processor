@@ -157,13 +157,12 @@ struct CsvReader {
 }
 
 impl CsvReader {
-    // TODO: should accept path and skip the File::open
-    fn new(filepath: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self {
-            csv_reader: csv::ReaderBuilder::new()
-                .trim(csv::Trim::All)
-                .from_reader(std::fs::File::open(filepath)?),
-        })
+    fn new(filepath: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+        csv::ReaderBuilder::new()
+            .trim(csv::Trim::All)
+            .from_path(filepath)
+            .map(|reader| Self { csv_reader: reader })
+            .map_err(|err| err.into())
     }
 }
 
@@ -175,13 +174,12 @@ impl std::iter::Iterator for CsvReader {
         // probs after we can make the error from any internal error
         if let Some(res) = self.csv_reader.deserialize::<RawRecord>().next() {
             match res {
-                Ok(raw_record) => match Record::try_from(raw_record) {
-                    Ok(record) => Some(record),
-                    Err(err) => {
+                Ok(raw_record) => Record::try_from(raw_record)
+                    .map_err(|err| {
                         eprintln!("CSV parsing error: {:?}", &err);
-                        None
-                    }
-                },
+                        err
+                    })
+                    .ok(),
                 Err(err) => {
                     eprintln!("CSV parsing error: {:?}", &err);
                     None
@@ -206,14 +204,13 @@ impl Account {
     }
 }
 
-// TODO: make it hold refs
 #[derive(Debug, Clone)]
-struct AccountRecord {
-    client_id: ClientID,
-    account: Account,
+struct AccountRecord<'a> {
+    client_id: &'a ClientID,
+    account: &'a Account,
 }
 
-impl Serialize for AccountRecord {
+impl<'a> Serialize for AccountRecord<'a> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
 
@@ -289,14 +286,12 @@ impl TransactionProcessor {
 
                 match amendment.amendment_type {
                     AmendmentType::Dispute => {
-                        // TODO: test for double dispute
                         if !self.in_dispute.insert(amendment.transaction_id) {
                             return Err(Error::Processing(
                                 ProcessingError::TransactionIsAlreadyInDispute,
                             ));
                         }
 
-                        // TODO: test both withdrawal and deposit dispute
                         client_account.available -= transaction.amount;
                         client_account.held += transaction.amount;
                     }
@@ -350,9 +345,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         print_usage();
     } else {
         let filename = args.skip(1).next().unwrap();
-        eprintln!("Got file {}", &filename);
+        eprintln!("Got file {}", &filename); // TODO: replace with log trace
 
-        let csv_records = CsvReader::new(&filename)?;
+        let csv_records = CsvReader::new(&std::path::Path::new(&filename))?;
         let mut transaction_processor = TransactionProcessor::default();
         for record in csv_records.into_iter() {
             if let Err(err) = transaction_processor.process(&record) {
@@ -363,7 +358,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let stdout = std::io::stdout();
         let stdout_lock = stdout.lock();
         let mut csv_writer = csv::Writer::from_writer(stdout_lock);
-        for (client_id, account) in transaction_processor.accounts.into_iter() {
+        for (client_id, account) in transaction_processor.accounts.iter() {
             csv_writer.serialize(AccountRecord { client_id, account })?;
         }
     }
