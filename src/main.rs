@@ -614,4 +614,35 @@ mod test {
         assert_eq!(state_after_both_chargebacks.held, Decimal::zero());
         assert!(state_after_both_chargebacks.locked);
     }
+
+    #[test]
+    fn test_locked() {
+        let mut generator = TransactionGenerator::default();
+        let mut processor = TransactionProcessor::default();
+
+        let client_id = ClientID::new(23);
+        let locked_account = Account {
+            available: dec!(15),
+            held: Decimal::zero(),
+            locked: true,
+        };
+        processor.accounts.insert(client_id, locked_account.clone());
+
+        // Trying to deposit or withdraw from a locked account fails
+        let deposit = generator.adjust_amount(client_id, dec!(10));
+        assert!(processor.process(&deposit).is_err());
+        assert_eq!(locked_account, *processor.accounts.get(&client_id).unwrap());
+
+        let withdrawal = generator.adjust_amount(client_id, dec!(-7));
+        assert!(processor.process(&withdrawal).is_err());
+        assert_eq!(locked_account, *processor.accounts.get(&client_id).unwrap());
+
+        // Disputing of the failed transactions also fails
+        assert!(processor
+            .process(&generator.dispute(deposit.transaction_id()))
+            .is_err());
+        assert!(processor
+            .process(&generator.dispute(withdrawal.transaction_id()))
+            .is_err());
+    }
 }
