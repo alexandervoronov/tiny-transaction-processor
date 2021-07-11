@@ -8,6 +8,19 @@ enum InputFormatError {
     MissingAmount,
 }
 
+impl std::fmt::Display for InputFormatError {
+    // This trait requires `fmt` with this exact signature.
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // Write strictly the first element into the supplied output
+        // stream: `f`. Returns `fmt::Result` which indicates whether the
+        // operation succeeded or failed. Note that `write!` uses syntax which
+        // is very similar to `println!`.
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for InputFormatError {}
+
 #[derive(Debug)]
 enum ProcessingError {
     TransactionOnLockedAccount,
@@ -164,30 +177,26 @@ impl CsvReader {
             .map(|reader| Self { csv_reader: reader })
             .map_err(|err| err.into())
     }
+
+    fn get_next_record(&mut self) -> Result<Option<Record>, Box<dyn std::error::Error>> {
+        let next_record = self
+            .csv_reader
+            .deserialize::<RawRecord>()
+            .next()
+            .transpose()?;
+        next_record.map(Record::try_from).transpose().map_err(|err| err.into())
+    }
 }
 
 impl std::iter::Iterator for CsvReader {
     type Item = Record;
 
+    // TODO: don't fail on the first error and eat out the rest of the file
     fn next(self: &mut Self) -> Option<Record> {
-        // TODO: this definitely can be better structured,
-        // probs after we can make the error from any internal error
-        if let Some(res) = self.csv_reader.deserialize::<RawRecord>().next() {
-            match res {
-                Ok(raw_record) => Record::try_from(raw_record)
-                    .map_err(|err| {
-                        eprintln!("CSV parsing error: {:?}", &err);
-                        err
-                    })
-                    .ok(),
-                Err(err) => {
-                    eprintln!("CSV parsing error: {:?}", &err);
-                    None
-                }
-            }
-        } else {
-            None
-        }
+        self.get_next_record()
+            .map_err(|err| eprintln!("CSV parsing error: {:?}", &err))
+            .ok()
+            .flatten()
     }
 }
 
