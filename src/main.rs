@@ -198,6 +198,29 @@ impl Account {
     }
 }
 
+#[derive(Debug, Clone)]
+struct AccountRecord {
+    client_id: ClientID,
+    account: Account,
+}
+
+impl Serialize for AccountRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let mut state = serializer.serialize_struct("AccountRecord", 5)?;
+        state.serialize_field("client", &self.client_id)?;
+        state.serialize_field("available", &self.account.available)?;
+        state.serialize_field("held", &self.account.held)?;
+        state.serialize_field("total", &self.account.total())?;
+        state.serialize_field("locked", &self.account.locked)?;
+        state.end()
+    }
+}
+
 #[derive(Default)]
 struct TransactionProcessor {
     // TODO: disallow double dispute
@@ -332,9 +355,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // TODO: proper CSV output
-        for acc in transaction_processor.accounts.iter() {
-            println!("{:?}", acc);
+        let stdout = std::io::stdout();
+        let stdout_lock = stdout.lock();
+        let mut csv_writer = csv::Writer::from_writer(stdout_lock);
+        for (client_id, account) in transaction_processor.accounts.into_iter() {
+            csv_writer.serialize(AccountRecord { client_id, account })?;
         }
     }
 
