@@ -1,25 +1,30 @@
+use log::{error, info};
 use tiny_transaction_processor::*;
 
 fn print_usage() {
-    eprintln!("Usage:");
-    eprintln!("  tiny-transaction-processor <path-to-transaction-file>");
+    info!("Usage:");
+    info!("  tiny-transaction-processor <path-to-transaction-file>");
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Info)
+        .format_timestamp(None)
+        .format_module_path(false)
+        .parse_default_env()
+        .init();
+
     let args = std::env::args();
     match args.len().cmp(&2) {
         std::cmp::Ordering::Equal => {
             let filename = args.skip(1).next().unwrap();
-            eprintln!("Got file {}", &filename); // TODO: replace with log trace
+            info!("Input CSV file: {}", &filename);
 
             let csv_transactions = CsvReader::from_path(&std::path::Path::new(&filename))?;
             let mut transaction_processor = TransactionProcessor::default();
             for transaction in csv_transactions.into_iter() {
                 if let Err(err) = transaction_processor.process(&transaction) {
-                    eprintln!(
-                        "Transaction [{:?}] processing error: {:?}",
-                        &transaction, &err
-                    );
+                    error!("{:?} failed with error {:?}", &transaction, &err);
                 }
             }
 
@@ -31,13 +36,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         std::cmp::Ordering::Greater => {
-            // TODO: return error here? 
-            eprintln!("Error: only one command line argument is expected");
+            // TODO: return error here?
+            error!("Only one command line argument is expected");
             eprintln!("");
             print_usage();
         }
         std::cmp::Ordering::Less => {
-            eprintln!("Error: missing path to the transaction file");
+            error!(
+                "Missing argument! Please provide a path to the CSV file containing transactions"
+            );
             eprintln!("");
             print_usage();
         }

@@ -1,3 +1,4 @@
+use log::{error, warn};
 use std::convert::TryFrom;
 
 use rust_decimal::{prelude::Zero, Decimal};
@@ -71,7 +72,7 @@ pub enum TransferType {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct Transfer {
     #[serde(alias = "type")]
-  pub  transfer_type: TransferType,
+    pub transfer_type: TransferType,
     #[serde(alias = "client")]
     pub client_id: ClientID,
     #[serde(alias = "tx")]
@@ -137,8 +138,8 @@ impl std::convert::TryFrom<RawTransaction> for Transaction {
         match transaction.transaction_type {
             TransactionType::Amendment(amendment_type) => {
                 if transaction.amount.is_some() {
-                    eprintln!(
-                        "Warning: amount info on transation {:?} will be ignored",
+                    warn!(
+                        "Amount on transation {:?} will be ignored. You can only dispute the entire transfer and can't alter the amount being disputed",
                         &transaction
                     );
                 }
@@ -203,7 +204,7 @@ impl<CsvInput: std::io::Read> std::iter::Iterator for CsvReader<CsvInput> {
     // TODO: don't fail on the first error and eat out the rest of the file
     fn next(self: &mut Self) -> Option<Transaction> {
         self.get_next_transaction()
-            .map_err(|err| eprintln!("CSV parsing error: {:?}", &err))
+            .map_err(|err| error!("CSV parsing error: {:?}", &err))
             .ok()
             .flatten()
     }
