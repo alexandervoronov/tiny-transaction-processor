@@ -474,17 +474,20 @@ fn test_csv_parsing_tricky_cases() {
     deposit, banana, 2, -3"#;
     assert!(get_transactions(invalid_client_id_csv).is_empty());
 
-    // Currently we error on the first line with invalid formatting. We should be able to do better, but let's
-    // say this is good enough for now.
+    // Ignore the line with invalid formatting and return all the valid lines
     let csv_with_invalid_entry = r#"type, client, tx, amount
         deposit, 1, 1, 12
         banana
         withdrawal, 1, 2, 10
     "#;
     let transactions_with_invalid_entry = get_transactions(csv_with_invalid_entry);
-    assert_eq!(transactions_with_invalid_entry.len(), 1);
+    assert_eq!(transactions_with_invalid_entry.len(), 2);
     assert_eq!(
         extract_type(&transactions_with_invalid_entry[0]),
         TransactionType::Transfer(TransferType::Deposit)
+    );
+    assert_eq!(
+        extract_type(&transactions_with_invalid_entry[1]),
+        TransactionType::Transfer(TransferType::Withdrawal)
     );
 }

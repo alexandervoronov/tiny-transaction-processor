@@ -217,25 +217,29 @@ impl<CsvInput: std::io::Read> CsvReader<CsvInput> {
         }
     }
 
-    fn get_next_transaction(&mut self) -> Result<Option<Transaction>, InputFormatError> {
-        let next_transaction = self
-            .csv_reader
+    fn get_next_transaction(&mut self) -> Option<Result<Transaction, InputFormatError>> {
+        self.csv_reader
             .deserialize::<RawTransaction>()
             .next()
-            .transpose()?;
-        next_transaction.map(Transaction::try_from).transpose()
+            .map(|result| {
+                result
+                    .map_err(|err| err.into())
+                    .and_then(Transaction::try_from)
+            })
     }
 }
 
 impl<CsvInput: std::io::Read> std::iter::Iterator for CsvReader<CsvInput> {
     type Item = Transaction;
 
-    // TODO: don't fail on the first error and eat out the rest of the file
     fn next(self: &mut Self) -> Option<Transaction> {
-        self.get_next_transaction()
-            .map_err(|err| error!("CSV parsing error: {:?}", &err))
-            .ok()
-            .flatten()
+        while let Some(result) = self.get_next_transaction() {
+            match result {
+                Ok(transaction) => return Some(transaction),
+                Err(err) => error!("CSV parsing error: {:?}", &err)
+            }
+        }
+        None
     }
 }
 
