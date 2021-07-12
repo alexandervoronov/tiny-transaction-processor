@@ -19,14 +19,14 @@ impl std::error::Error for InputFormatError {}
 
 #[derive(Debug)]
 enum ProcessingError {
-    TransactionOnLockedAccount,
+    TransferOnLockedAccount,
     NotEnoughMoneyForWithdrawal,
     TryingToDisputeUnknownTransaction,
     WrongClientInDispute,
-    TransactionIsAlreadyInDispute,
-    ResolvedTransactionWasNotInDispute,
-    ChargedBackWasNotInDispute,
-    DisputingAlreadyChargedBackTransaction,
+    TransferIsAlreadyInDispute,
+    ResolvedTransferWasNotInDispute,
+    ChargedBackTransferWasNotInDispute,
+    DisputingAlreadyChargedBackTransfer,
     TransactionIdAlreadyExists,
 }
 
@@ -64,16 +64,16 @@ impl ClientID {
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-enum TransactionType {
+enum TransferType {
     Deposit,
     Withdrawal,
 }
 
 // TODO: rename to transfer
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-struct NewTransaction {
+struct Transfer {
     #[serde(alias = "type")]
-    transaction_type: TransactionType,
+    transfer_type: TransferType,
     #[serde(alias = "client")]
     client_id: ClientID,
     #[serde(alias = "tx")]
@@ -90,7 +90,7 @@ enum AmendmentType {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-struct TransactionAmendment {
+struct Amendment {
     #[serde(alias = "type")]
     amendment_type: AmendmentType,
     #[serde(alias = "client")]
@@ -101,32 +101,32 @@ struct TransactionAmendment {
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
-enum Record {
-    Transaction(NewTransaction),
-    Amendment(TransactionAmendment),
+enum Transaction {
+    Transfer(Transfer),
+    Amendment(Amendment),
 }
 
-impl Record {
+impl Transaction {
     #[cfg(test)]
     fn transaction_id(&self) -> TransactionID {
         match self {
-            Record::Transaction(transaction) => transaction.transaction_id,
-            Record::Amendment(amendment) => amendment.transaction_id,
+            Transaction::Transfer(transfer) => transfer.transaction_id,
+            Transaction::Amendment(amendment) => amendment.transaction_id,
         }
     }
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
-enum RawRecordType {
-    Transaction(TransactionType),
+enum TransactionType {
+    Transfer(TransferType),
     Amendment(AmendmentType),
 }
 
 #[derive(Debug, Deserialize)]
-struct RawRecord {
+struct RawTransaction {
     #[serde(alias = "type")]
-    record_type: RawRecordType,
+    transaction_type: TransactionType,
     #[serde(alias = "client")]
     client_id: ClientID,
     #[serde(alias = "tx")]
@@ -134,33 +134,33 @@ struct RawRecord {
     amount: Option<Decimal>,
 }
 
-impl std::convert::TryFrom<RawRecord> for Record {
+impl std::convert::TryFrom<RawTransaction> for Transaction {
     type Error = InputFormatError;
-    fn try_from(raw_record: RawRecord) -> Result<Record, Self::Error> {
-        match raw_record.record_type {
-            RawRecordType::Amendment(amendment_type) => {
-                if raw_record.amount.is_some() {
+    fn try_from(transaction: RawTransaction) -> Result<Transaction, Self::Error> {
+        match transaction.transaction_type {
+            TransactionType::Amendment(amendment_type) => {
+                if transaction.amount.is_some() {
                     eprintln!(
                         "Warning: amount info on transation {:?} will be ignored",
-                        &raw_record
+                        &transaction
                     );
                 }
-                Ok(Record::Amendment(TransactionAmendment {
+                Ok(Transaction::Amendment(Amendment {
                     amendment_type,
-                    client_id: raw_record.client_id,
-                    transaction_id: raw_record.transaction_id,
+                    client_id: transaction.client_id,
+                    transaction_id: transaction.transaction_id,
                 }))
             }
-            RawRecordType::Transaction(transaction_type) => match raw_record.amount {
+            TransactionType::Transfer(transfer_type) => match transaction.amount {
                 Some(amount) => {
                     if amount < Decimal::zero() {
                         Err(InputFormatError::NegativeAmount)
                     } else {
-                        Ok(Record::Transaction(NewTransaction {
-                            transaction_type,
+                        Ok(Transaction::Transfer(Transfer {
+                            transfer_type,
                             amount,
-                            client_id: raw_record.client_id,
-                            transaction_id: raw_record.transaction_id,
+                            client_id: transaction.client_id,
+                            transaction_id: transaction.transaction_id,
                         }))
                     }
                 }
@@ -190,25 +190,25 @@ impl<CsvInput: std::io::Read> CsvReader<CsvInput> {
         }
     }
 
-    fn get_next_record(&mut self) -> Result<Option<Record>, Box<dyn std::error::Error>> {
-        let next_record = self
+    fn get_next_transaction(&mut self) -> Result<Option<Transaction>, Box<dyn std::error::Error>> {
+        let next_transaction = self
             .csv_reader
-            .deserialize::<RawRecord>()
+            .deserialize::<RawTransaction>()
             .next()
             .transpose()?;
-        next_record
-            .map(Record::try_from)
+        next_transaction
+            .map(Transaction::try_from)
             .transpose()
             .map_err(|err| err.into())
     }
 }
 
 impl<CsvInput: std::io::Read> std::iter::Iterator for CsvReader<CsvInput> {
-    type Item = Record;
+    type Item = Transaction;
 
     // TODO: don't fail on the first error and eat out the rest of the file
-    fn next(self: &mut Self) -> Option<Record> {
-        self.get_next_record()
+    fn next(self: &mut Self) -> Option<Transaction> {
+        self.get_next_transaction()
             .map_err(|err| eprintln!("CSV parsing error: {:?}", &err))
             .ok()
             .flatten()
@@ -229,12 +229,12 @@ impl Account {
 }
 
 #[derive(Debug, Clone)]
-struct AccountRecord<'a> {
+struct AccountWithClientID<'a> {
     client_id: &'a ClientID,
     account: &'a Account,
 }
 
-impl<'a> Serialize for AccountRecord<'a> {
+impl<'a> Serialize for AccountWithClientID<'a> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
 
@@ -250,7 +250,7 @@ impl<'a> Serialize for AccountRecord<'a> {
 
 #[derive(Default)]
 struct TransactionProcessor {
-    transactions: std::collections::HashMap<TransactionID, NewTransaction>,
+    transfers: std::collections::HashMap<TransactionID, Transfer>,
     accounts: std::collections::HashMap<ClientID, Account>,
     in_dispute: std::collections::HashSet<TransactionID>,
     charged_back: std::collections::HashSet<TransactionID>,
@@ -258,30 +258,28 @@ struct TransactionProcessor {
 
 impl TransactionProcessor {
     // TODO: can return processing error
-    fn process(&mut self, record: &Record) -> Result<(), Error> {
-        match record {
-            Record::Transaction(transaction) => {
-                if self.transactions.contains_key(&transaction.transaction_id) {
+    fn process(&mut self, transaction: &Transaction) -> Result<(), Error> {
+        match transaction {
+            Transaction::Transfer(transfer) => {
+                if self.transfers.contains_key(&transfer.transaction_id) {
                     return Err(Error::Processing(
                         ProcessingError::TransactionIdAlreadyExists,
                     ));
                 }
                 let mut client_account = self
                     .accounts
-                    .get(&transaction.client_id)
+                    .get(&transfer.client_id)
                     .cloned()
                     .unwrap_or_default();
 
                 if client_account.locked {
-                    return Err(Error::Processing(
-                        ProcessingError::TransactionOnLockedAccount,
-                    ));
+                    return Err(Error::Processing(ProcessingError::TransferOnLockedAccount));
                 }
-                match transaction.transaction_type {
-                    TransactionType::Deposit => client_account.available += transaction.amount,
-                    TransactionType::Withdrawal => {
-                        if client_account.available >= transaction.amount {
-                            client_account.available -= transaction.amount;
+                match transfer.transfer_type {
+                    TransferType::Deposit => client_account.available += transfer.amount,
+                    TransferType::Withdrawal => {
+                        if client_account.available >= transfer.amount {
+                            client_account.available -= transfer.amount;
                         } else {
                             return Err(Error::Processing(
                                 ProcessingError::NotEnoughMoneyForWithdrawal,
@@ -289,21 +287,21 @@ impl TransactionProcessor {
                         }
                     }
                 }
-                self.accounts.insert(transaction.client_id, client_account);
-                self.transactions
-                    .insert(transaction.transaction_id, transaction.clone());
+                self.accounts.insert(transfer.client_id, client_account);
+                self.transfers
+                    .insert(transfer.transaction_id, transfer.clone());
                 Ok(())
             }
-            Record::Amendment(amendment) => {
-                let transaction = match self.transactions.get(&amendment.transaction_id) {
-                    Some(transaction) => transaction,
+            Transaction::Amendment(amendment) => {
+                let transfer = match self.transfers.get(&amendment.transaction_id) {
+                    Some(transfer) => transfer,
                     None => {
                         return Err(Error::Processing(
                             ProcessingError::TryingToDisputeUnknownTransaction,
                         ))
                     }
                 };
-                if transaction.client_id != amendment.client_id {
+                if transfer.client_id != amendment.client_id {
                     return Err(Error::Processing(ProcessingError::WrongClientInDispute));
                 }
 
@@ -317,36 +315,36 @@ impl TransactionProcessor {
                     AmendmentType::Dispute => {
                         if !self.in_dispute.insert(amendment.transaction_id) {
                             return Err(Error::Processing(
-                                ProcessingError::TransactionIsAlreadyInDispute,
+                                ProcessingError::TransferIsAlreadyInDispute,
                             ));
                         }
                         if self.charged_back.contains(&amendment.transaction_id) {
                             return Err(Error::Processing(
-                                ProcessingError::DisputingAlreadyChargedBackTransaction,
+                                ProcessingError::DisputingAlreadyChargedBackTransfer,
                             ));
                         }
 
-                        client_account.available -= transaction.amount;
-                        client_account.held += transaction.amount;
+                        client_account.available -= transfer.amount;
+                        client_account.held += transfer.amount;
                     }
                     AmendmentType::Resolve => {
                         if !self.in_dispute.remove(&amendment.transaction_id) {
                             return Err(Error::Processing(
-                                ProcessingError::ResolvedTransactionWasNotInDispute,
+                                ProcessingError::ResolvedTransferWasNotInDispute,
                             ));
                         }
 
-                        client_account.available += transaction.amount;
-                        client_account.held -= transaction.amount;
+                        client_account.available += transfer.amount;
+                        client_account.held -= transfer.amount;
                     }
                     AmendmentType::Chargeback => {
                         if !self.in_dispute.remove(&amendment.transaction_id) {
                             return Err(Error::Processing(
-                                ProcessingError::ChargedBackWasNotInDispute,
+                                ProcessingError::ChargedBackTransferWasNotInDispute,
                             ));
                         }
 
-                        client_account.held -= transaction.amount;
+                        client_account.held -= transfer.amount;
                         client_account.locked = true;
                         self.charged_back.insert(amendment.transaction_id);
                     }
@@ -375,19 +373,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let filename = args.skip(1).next().unwrap();
             eprintln!("Got file {}", &filename); // TODO: replace with log trace
 
-            let csv_records = CsvReader::from_path(&std::path::Path::new(&filename))?;
+            let csv_transactions = CsvReader::from_path(&std::path::Path::new(&filename))?;
             let mut transaction_processor = TransactionProcessor::default();
-            for record in csv_records.into_iter() {
-                if let Err(err) = transaction_processor.process(&record) {
-                    eprintln!("Transaction [{:?}] processing error: {:?}", &record, &err);
+            for transaction in csv_transactions.into_iter() {
+                if let Err(err) = transaction_processor.process(&transaction) {
+                    eprintln!(
+                        "Transaction [{:?}] processing error: {:?}",
+                        &transaction, &err
+                    );
                 }
             }
 
             let stdout = std::io::stdout();
             let stdout_lock = stdout.lock();
-            let mut csv_writer = csv::Writer::from_writer(stdout_lock);
+            let mut csv_account_writer = csv::Writer::from_writer(stdout_lock);
             for (client_id, account) in transaction_processor.accounts.iter() {
-                csv_writer.serialize(AccountRecord { client_id, account })?;
+                csv_account_writer.serialize(AccountWithClientID { client_id, account })?;
             }
         }
         std::cmp::Ordering::Greater => {
@@ -417,59 +418,59 @@ mod test {
     }
 
     impl TransactionGenerator {
-        fn adjust_amount(&mut self, client_id: ClientID, amount: Decimal) -> Record {
+        fn transfer(&mut self, client_id: ClientID, amount: Decimal) -> Transaction {
             assert_ne!(amount, dec!(0), "We don't expect zero amount transactions");
 
             self.transaction_count += 1;
             let transaction_id = TransactionID {
                 id: self.transaction_count,
             };
-            let transaction_type = if amount < dec!(0) {
-                TransactionType::Withdrawal
+            let transfer_type = if amount < dec!(0) {
+                TransferType::Withdrawal
             } else {
-                TransactionType::Deposit
+                TransferType::Deposit
             };
 
             self.clients_of_transactions
                 .insert(transaction_id, client_id);
-            Record::Transaction(NewTransaction {
+            Transaction::Transfer(Transfer {
                 transaction_id,
                 client_id,
                 amount: amount.abs(),
-                transaction_type,
+                transfer_type,
             })
         }
 
-        fn dispute(&mut self, transaction_id: TransactionID) -> Record {
+        fn dispute(&mut self, transaction_id: TransactionID) -> Transaction {
             let client_id = *self
                 .clients_of_transactions
                 .get(&transaction_id)
                 .expect("Unknown transaction");
-            Record::Amendment(TransactionAmendment {
+            Transaction::Amendment(Amendment {
                 client_id,
                 transaction_id,
                 amendment_type: AmendmentType::Dispute,
             })
         }
 
-        fn resolve(&mut self, transaction_id: TransactionID) -> Record {
+        fn resolve(&mut self, transaction_id: TransactionID) -> Transaction {
             let client_id = *self
                 .clients_of_transactions
                 .get(&transaction_id)
                 .expect("Unknown transaction");
-            Record::Amendment(TransactionAmendment {
+            Transaction::Amendment(Amendment {
                 client_id,
                 transaction_id,
                 amendment_type: AmendmentType::Resolve,
             })
         }
 
-        fn chargeback(&mut self, transaction_id: TransactionID) -> Record {
+        fn chargeback(&mut self, transaction_id: TransactionID) -> Transaction {
             let client_id = *self
                 .clients_of_transactions
                 .get(&transaction_id)
                 .expect("Unknown transaction");
-            Record::Amendment(TransactionAmendment {
+            Transaction::Amendment(Amendment {
                 client_id,
                 transaction_id,
                 amendment_type: AmendmentType::Chargeback,
@@ -484,10 +485,10 @@ mod test {
 
         let client_id = ClientID::new(23);
         assert!(processor
-            .process(&generator.adjust_amount(client_id, dec!(2)))
+            .process(&generator.transfer(client_id, dec!(2)))
             .is_ok());
         assert!(processor
-            .process(&generator.adjust_amount(client_id, dec!(-3)))
+            .process(&generator.transfer(client_id, dec!(-3)))
             .is_err());
 
         assert_eq!(
@@ -502,8 +503,8 @@ mod test {
         let mut processor = TransactionProcessor::default();
 
         let client_id = ClientID::new(23);
-        let deposit = generator.adjust_amount(client_id, dec!(10));
-        let withdrawal = generator.adjust_amount(client_id, dec!(-7));
+        let deposit = generator.transfer(client_id, dec!(10));
+        let withdrawal = generator.transfer(client_id, dec!(-7));
         assert!(processor.process(&deposit).is_ok());
         assert!(processor.process(&withdrawal).is_ok());
 
@@ -511,7 +512,7 @@ mod test {
         assert!(initial_state.is_some(), "Client account must exist");
 
         // Dispute with wrong client id is rejected and doesn't change the state
-        let dispute_with_wrong_client = Record::Amendment(TransactionAmendment {
+        let dispute_with_wrong_client = Transaction::Amendment(Amendment {
             amendment_type: AmendmentType::Dispute,
             client_id: ClientID::new(72),
             transaction_id: deposit.transaction_id(),
@@ -521,7 +522,7 @@ mod test {
         assert_eq!(processor.accounts.get(&client_id).cloned(), initial_state);
 
         // Dispute with unknown transaction id is rejected and doesn't change the state
-        let dispute_of_non_existent_transaction = Record::Amendment(TransactionAmendment {
+        let dispute_of_non_existent_transaction = Transaction::Amendment(Amendment {
             amendment_type: AmendmentType::Dispute,
             client_id,
             transaction_id: TransactionID::new(42),
@@ -562,8 +563,8 @@ mod test {
         let mut processor = TransactionProcessor::default();
 
         let client_id = ClientID::new(23);
-        let deposit = generator.adjust_amount(client_id, dec!(10));
-        let withdrawal = generator.adjust_amount(client_id, dec!(-7));
+        let deposit = generator.transfer(client_id, dec!(10));
+        let withdrawal = generator.transfer(client_id, dec!(-7));
         assert!(processor.process(&deposit).is_ok());
         assert!(processor.process(&withdrawal).is_ok());
 
@@ -592,8 +593,8 @@ mod test {
         let mut processor = TransactionProcessor::default();
 
         let client_id = ClientID::new(23);
-        let deposit = generator.adjust_amount(client_id, dec!(10));
-        let withdrawal = generator.adjust_amount(client_id, dec!(-7));
+        let deposit = generator.transfer(client_id, dec!(10));
+        let withdrawal = generator.transfer(client_id, dec!(-7));
         assert!(processor.process(&deposit).is_ok());
         assert!(processor.process(&withdrawal).is_ok());
 
@@ -646,11 +647,11 @@ mod test {
         processor.accounts.insert(client_id, locked_account.clone());
 
         // Trying to deposit or withdraw from a locked account fails
-        let deposit = generator.adjust_amount(client_id, dec!(10));
+        let deposit = generator.transfer(client_id, dec!(10));
         assert!(processor.process(&deposit).is_err());
         assert_eq!(locked_account, *processor.accounts.get(&client_id).unwrap());
 
-        let withdrawal = generator.adjust_amount(client_id, dec!(-7));
+        let withdrawal = generator.transfer(client_id, dec!(-7));
         assert!(processor.process(&withdrawal).is_err());
         assert_eq!(locked_account, *processor.accounts.get(&client_id).unwrap());
 
@@ -676,7 +677,7 @@ mod test {
         processor.accounts.insert(client_id, initial_state.clone());
 
         // Trying to deposit or withdraw from a locked account fails
-        let excessive_withdrawal = generator.adjust_amount(client_id, dec!(-16));
+        let excessive_withdrawal = generator.transfer(client_id, dec!(-16));
         assert!(processor.process(&excessive_withdrawal).is_err());
 
         let dispute = generator.dispute(excessive_withdrawal.transaction_id());
@@ -690,13 +691,13 @@ mod test {
         let mut processor = TransactionProcessor::default();
 
         let good_client_id = ClientID::new(23);
-        let good_deposit = generator.adjust_amount(good_client_id, dec!(10));
+        let good_deposit = generator.transfer(good_client_id, dec!(10));
 
         let weird_client_id = ClientID::new(243);
-        let weird_deposit_reusing_transaction_id = Record::Transaction(NewTransaction {
+        let weird_deposit_reusing_transaction_id = Transaction::Transfer(Transfer {
             client_id: weird_client_id,
             transaction_id: good_deposit.transaction_id(),
-            transaction_type: TransactionType::Deposit,
+            transfer_type: TransferType::Deposit,
             amount: dec!(10),
         });
 
@@ -761,16 +762,18 @@ mod test {
         );
     }
 
-    fn get_transactions(input_csv: &str) -> Vec<Record> {
+    fn get_transactions(input_csv: &str) -> Vec<Transaction> {
         CsvReader::from_reader(input_csv.as_bytes()).collect::<Vec<_>>()
     }
 
-    fn extract_type(record: &Record) -> RawRecordType {
+    fn extract_type(record: &Transaction) -> TransactionType {
         match record {
-            Record::Transaction(transaction) => {
-                RawRecordType::Transaction(transaction.transaction_type)
+            Transaction::Transfer(transaction) => {
+                TransactionType::Transfer(transaction.transfer_type)
             }
-            Record::Amendment(amendment) => RawRecordType::Amendment(amendment.amendment_type),
+            Transaction::Amendment(amendment) => {
+                TransactionType::Amendment(amendment.amendment_type)
+            }
         }
     }
 
@@ -789,8 +792,8 @@ mod test {
         assert_eq!(transactions.len(), 5);
         assert_eq!(
             transactions[0],
-            Record::Transaction(NewTransaction {
-                transaction_type: TransactionType::Deposit,
+            Transaction::Transfer(Transfer {
+                transfer_type: TransferType::Deposit,
                 amount: dec!(10),
                 client_id: ClientID::new(1),
                 transaction_id: TransactionID::new(1)
@@ -798,8 +801,8 @@ mod test {
         );
         assert_eq!(
             transactions[1],
-            Record::Transaction(NewTransaction {
-                transaction_type: TransactionType::Withdrawal,
+            Transaction::Transfer(Transfer {
+                transfer_type: TransferType::Withdrawal,
                 amount: dec!(20),
                 client_id: ClientID::new(1),
                 transaction_id: TransactionID::new(2)
@@ -807,7 +810,7 @@ mod test {
         );
         assert_eq!(
             transactions[2],
-            Record::Amendment(TransactionAmendment {
+            Transaction::Amendment(Amendment {
                 amendment_type: AmendmentType::Dispute,
                 client_id: ClientID::new(2),
                 transaction_id: TransactionID::new(4)
@@ -815,7 +818,7 @@ mod test {
         );
         assert_eq!(
             transactions[3],
-            Record::Amendment(TransactionAmendment {
+            Transaction::Amendment(Amendment {
                 amendment_type: AmendmentType::Resolve,
                 client_id: ClientID::new(3),
                 transaction_id: TransactionID::new(5)
@@ -823,7 +826,7 @@ mod test {
         );
         assert_eq!(
             transactions[4],
-            Record::Amendment(TransactionAmendment {
+            Transaction::Amendment(Amendment {
                 amendment_type: AmendmentType::Chargeback,
                 client_id: ClientID::new(4),
                 transaction_id: TransactionID::new(10)
@@ -850,9 +853,9 @@ mod test {
                 .map(extract_type)
                 .collect::<Vec<_>>(),
             vec![
-                RawRecordType::Transaction(TransactionType::Deposit),
-                RawRecordType::Amendment(AmendmentType::Dispute),
-                RawRecordType::Amendment(AmendmentType::Resolve)
+                TransactionType::Transfer(TransferType::Deposit),
+                TransactionType::Amendment(AmendmentType::Dispute),
+                TransactionType::Amendment(AmendmentType::Resolve)
             ]
         );
 
@@ -867,7 +870,7 @@ mod test {
         assert_eq!(dispute_with_amount_transactions.len(), 1);
         assert_eq!(
             dispute_with_amount_transactions[0],
-            Record::Amendment(TransactionAmendment {
+            Transaction::Amendment(Amendment {
                 amendment_type: AmendmentType::Dispute,
                 client_id: ClientID::new(3),
                 transaction_id: TransactionID::new(5)
@@ -897,7 +900,7 @@ mod test {
         assert_eq!(transactions_with_invalid_entry.len(), 1);
         assert_eq!(
             extract_type(&transactions_with_invalid_entry[0]),
-            RawRecordType::Transaction(TransactionType::Deposit)
+            TransactionType::Transfer(TransferType::Deposit)
         );
     }
 }
