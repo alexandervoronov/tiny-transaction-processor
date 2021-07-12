@@ -27,6 +27,7 @@ enum ProcessingError {
     ResolvedTransactionWasNotInDispute,
     ChargedBackWasNotInDispute,
     DisputingAlreadyChargedBackTransaction,
+    TransactionIdAlreadyExists,
 }
 
 #[derive(Debug)]
@@ -68,6 +69,7 @@ enum TransactionType {
     Withdrawal,
 }
 
+// TODO: rename to transfer
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct NewTransaction {
     #[serde(alias = "type")]
@@ -255,9 +257,15 @@ struct TransactionProcessor {
 }
 
 impl TransactionProcessor {
+    // TODO: can return processing error
     fn process(&mut self, record: &Record) -> Result<(), Error> {
         match record {
             Record::Transaction(transaction) => {
+                if self.transactions.contains_key(&transaction.transaction_id) {
+                    return Err(Error::Processing(
+                        ProcessingError::TransactionIdAlreadyExists,
+                    ));
+                }
                 let mut client_account = self
                     .accounts
                     .get(&transaction.client_id)
@@ -678,9 +686,43 @@ mod test {
 
     #[test]
     fn transaction_with_the_same_id_isnt_allowed() {
-        // TODO:
+        let mut generator = TransactionGenerator::default();
+        let mut processor = TransactionProcessor::default();
 
-        // TODO: even after chargeback
+        let good_client_id = ClientID::new(23);
+        let good_deposit = generator.adjust_amount(good_client_id, dec!(10));
+
+        let weird_client_id = ClientID::new(243);
+        let weird_deposit_reusing_transaction_id = Record::Transaction(NewTransaction {
+            client_id: weird_client_id,
+            transaction_id: good_deposit.transaction_id(),
+            transaction_type: TransactionType::Deposit,
+            amount: dec!(10),
+        });
+
+        assert!(processor.process(&good_deposit).is_ok());
+
+        // Can't redo the same transaction
+        assert!(processor.process(&good_deposit).is_err());
+        assert_eq!(
+            processor.accounts.get(&good_client_id).unwrap().available,
+            dec!(10)
+        );
+
+        // Can't use the transaction ID for a different client too
+        assert!(processor
+            .process(&weird_deposit_reusing_transaction_id)
+            .is_err());
+
+        // Even after chargeback still can't reuse the transaction ID
+        let dispute_good_deposit = generator.dispute(good_deposit.transaction_id());
+        let chargeback_good_deposit = generator.chargeback(good_deposit.transaction_id());
+        assert!(processor.process(&dispute_good_deposit).is_ok());
+        assert!(processor.process(&chargeback_good_deposit).is_ok());
+
+        assert!(processor
+            .process(&weird_deposit_reusing_transaction_id)
+            .is_err());
     }
 
     #[test]
