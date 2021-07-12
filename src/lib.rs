@@ -114,6 +114,35 @@ impl Transaction {
     }
 }
 
+impl std::fmt::Display for Transfer {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "{:?}, client_id : {}, transaction_id : {}, amount : {}",
+            self.transfer_type, self.client_id.id, self.transaction_id.id, self.amount
+        )
+    }
+}
+
+impl std::fmt::Display for Amendment {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "{:?}, client_id : {}, transaction_id : {}",
+            self.amendment_type, self.client_id.id, self.transaction_id.id
+        )
+    }
+}
+
+impl std::fmt::Display for Transaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Transaction::Transfer(transfer) => transfer.fmt(f),
+            Transaction::Amendment(amendment) => amendment.fmt(f),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum TransactionType {

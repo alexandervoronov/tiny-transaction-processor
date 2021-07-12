@@ -14,17 +14,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse_default_env()
         .init();
 
-    let args = std::env::args();
+    let mut args = std::env::args();
     match args.len().cmp(&2) {
         std::cmp::Ordering::Equal => {
-            let filename = args.skip(1).next().unwrap();
+            let filename = args.nth(1).unwrap();
             info!("Input CSV file: {}", &filename);
 
             let csv_transactions = CsvReader::from_path(&std::path::Path::new(&filename))?;
             let mut transaction_processor = TransactionProcessor::default();
             for transaction in csv_transactions.into_iter() {
                 if let Err(err) = transaction_processor.process(&transaction) {
-                    error!("{:?} failed with error {:?}", &transaction, &err);
+                    error!("[ {} ] failed with error {:?}", &transaction, &err);
                 }
             }
 
@@ -34,12 +34,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for (client_id, account) in transaction_processor.accounts.iter() {
                 csv_account_writer.serialize(AccountWithClientID { client_id, account })?;
             }
+
+            Ok(())
         }
         std::cmp::Ordering::Greater => {
-            // TODO: return error here?
             error!("Only one command line argument is expected");
             eprintln!("");
             print_usage();
+
+            Err(std::io::Error::from(std::io::ErrorKind::InvalidInput).into())
         }
         std::cmp::Ordering::Less => {
             error!(
@@ -47,8 +50,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             eprintln!("");
             print_usage();
+
+            Err(std::io::Error::from(std::io::ErrorKind::InvalidInput).into())
         }
     }
-
-    Ok(())
 }
