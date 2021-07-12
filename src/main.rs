@@ -7,6 +7,13 @@ use serde::{Deserialize, Serialize};
 enum InputFormatError {
     MissingAmount,
     NegativeAmount,
+    CsvError(csv::Error),
+}
+
+impl std::convert::From<csv::Error> for InputFormatError {
+    fn from(csv_error: csv::Error) -> InputFormatError {
+        InputFormatError::CsvError(csv_error)
+    }
 }
 
 impl std::fmt::Display for InputFormatError {
@@ -28,12 +35,6 @@ enum ProcessingError {
     ChargedBackTransferWasNotInDispute,
     DisputingAlreadyChargedBackTransfer,
     TransactionIdAlreadyExists,
-}
-
-#[derive(Debug)]
-enum Error {
-    InputFormat(InputFormatError),
-    Processing(ProcessingError),
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -69,7 +70,6 @@ enum TransferType {
     Withdrawal,
 }
 
-// TODO: rename to transfer
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct Transfer {
     #[serde(alias = "type")]
@@ -175,7 +175,7 @@ struct CsvReader<CsvInput: std::io::Read> {
 }
 
 impl CsvReader<std::fs::File> {
-    fn from_path(filepath: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+    fn from_path(filepath: &std::path::Path) -> Result<Self, std::io::Error> {
         Ok(CsvReader::from_reader(std::fs::File::open(filepath)?))
     }
 }
@@ -190,16 +190,13 @@ impl<CsvInput: std::io::Read> CsvReader<CsvInput> {
         }
     }
 
-    fn get_next_transaction(&mut self) -> Result<Option<Transaction>, Box<dyn std::error::Error>> {
+    fn get_next_transaction(&mut self) -> Result<Option<Transaction>, InputFormatError> {
         let next_transaction = self
             .csv_reader
             .deserialize::<RawTransaction>()
             .next()
             .transpose()?;
-        next_transaction
-            .map(Transaction::try_from)
-            .transpose()
-            .map_err(|err| err.into())
+        next_transaction.map(Transaction::try_from).transpose()
     }
 }
 
@@ -257,14 +254,11 @@ struct TransactionProcessor {
 }
 
 impl TransactionProcessor {
-    // TODO: can return processing error
-    fn process(&mut self, transaction: &Transaction) -> Result<(), Error> {
+    fn process(&mut self, transaction: &Transaction) -> Result<(), ProcessingError> {
         match transaction {
             Transaction::Transfer(transfer) => {
                 if self.transfers.contains_key(&transfer.transaction_id) {
-                    return Err(Error::Processing(
-                        ProcessingError::TransactionIdAlreadyExists,
-                    ));
+                    return Err(ProcessingError::TransactionIdAlreadyExists);
                 }
                 let mut client_account = self
                     .accounts
@@ -273,7 +267,7 @@ impl TransactionProcessor {
                     .unwrap_or_default();
 
                 if client_account.locked {
-                    return Err(Error::Processing(ProcessingError::TransferOnLockedAccount));
+                    return Err(ProcessingError::TransferOnLockedAccount);
                 }
                 match transfer.transfer_type {
                     TransferType::Deposit => client_account.available += transfer.amount,
@@ -281,9 +275,7 @@ impl TransactionProcessor {
                         if client_account.available >= transfer.amount {
                             client_account.available -= transfer.amount;
                         } else {
-                            return Err(Error::Processing(
-                                ProcessingError::NotEnoughMoneyForWithdrawal,
-                            ));
+                            return Err(ProcessingError::NotEnoughMoneyForWithdrawal);
                         }
                     }
                 }
@@ -295,14 +287,10 @@ impl TransactionProcessor {
             Transaction::Amendment(amendment) => {
                 let transfer = match self.transfers.get(&amendment.transaction_id) {
                     Some(transfer) => transfer,
-                    None => {
-                        return Err(Error::Processing(
-                            ProcessingError::TryingToDisputeUnknownTransaction,
-                        ))
-                    }
+                    None => return Err(ProcessingError::TryingToDisputeUnknownTransaction),
                 };
                 if transfer.client_id != amendment.client_id {
-                    return Err(Error::Processing(ProcessingError::WrongClientInDispute));
+                    return Err(ProcessingError::WrongClientInDispute);
                 }
 
                 let mut client_account = self
@@ -314,14 +302,10 @@ impl TransactionProcessor {
                 match amendment.amendment_type {
                     AmendmentType::Dispute => {
                         if !self.in_dispute.insert(amendment.transaction_id) {
-                            return Err(Error::Processing(
-                                ProcessingError::TransferIsAlreadyInDispute,
-                            ));
+                            return Err(ProcessingError::TransferIsAlreadyInDispute);
                         }
                         if self.charged_back.contains(&amendment.transaction_id) {
-                            return Err(Error::Processing(
-                                ProcessingError::DisputingAlreadyChargedBackTransfer,
-                            ));
+                            return Err(ProcessingError::DisputingAlreadyChargedBackTransfer);
                         }
 
                         client_account.available -= transfer.amount;
@@ -329,9 +313,7 @@ impl TransactionProcessor {
                     }
                     AmendmentType::Resolve => {
                         if !self.in_dispute.remove(&amendment.transaction_id) {
-                            return Err(Error::Processing(
-                                ProcessingError::ResolvedTransferWasNotInDispute,
-                            ));
+                            return Err(ProcessingError::ResolvedTransferWasNotInDispute);
                         }
 
                         client_account.available += transfer.amount;
@@ -339,9 +321,7 @@ impl TransactionProcessor {
                     }
                     AmendmentType::Chargeback => {
                         if !self.in_dispute.remove(&amendment.transaction_id) {
-                            return Err(Error::Processing(
-                                ProcessingError::ChargedBackTransferWasNotInDispute,
-                            ));
+                            return Err(ProcessingError::ChargedBackTransferWasNotInDispute);
                         }
 
                         client_account.held -= transfer.amount;
