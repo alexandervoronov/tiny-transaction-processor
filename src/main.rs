@@ -362,31 +362,35 @@ fn print_usage() {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args();
-    if args.len() < 2 {
-        eprintln!("Error: missing path to the transaction file");
-        eprintln!("");
-        print_usage();
-    } else if args.len() > 2 {
-        eprintln!("Error: only one command line argument is expected");
-        eprintln!("");
-        print_usage();
-    } else {
-        let filename = args.skip(1).next().unwrap();
-        eprintln!("Got file {}", &filename); // TODO: replace with log trace
+    match args.len().cmp(&2) {
+        std::cmp::Ordering::Equal => {
+            let filename = args.skip(1).next().unwrap();
+            eprintln!("Got file {}", &filename); // TODO: replace with log trace
 
-        let csv_records = CsvReader::from_path(&std::path::Path::new(&filename))?;
-        let mut transaction_processor = TransactionProcessor::default();
-        for record in csv_records.into_iter() {
-            if let Err(err) = transaction_processor.process(&record) {
-                eprintln!("Transaction [{:?}] processing error: {:?}", &record, &err);
+            let csv_records = CsvReader::from_path(&std::path::Path::new(&filename))?;
+            let mut transaction_processor = TransactionProcessor::default();
+            for record in csv_records.into_iter() {
+                if let Err(err) = transaction_processor.process(&record) {
+                    eprintln!("Transaction [{:?}] processing error: {:?}", &record, &err);
+                }
+            }
+
+            let stdout = std::io::stdout();
+            let stdout_lock = stdout.lock();
+            let mut csv_writer = csv::Writer::from_writer(stdout_lock);
+            for (client_id, account) in transaction_processor.accounts.iter() {
+                csv_writer.serialize(AccountRecord { client_id, account })?;
             }
         }
-
-        let stdout = std::io::stdout();
-        let stdout_lock = stdout.lock();
-        let mut csv_writer = csv::Writer::from_writer(stdout_lock);
-        for (client_id, account) in transaction_processor.accounts.iter() {
-            csv_writer.serialize(AccountRecord { client_id, account })?;
+        std::cmp::Ordering::Greater => {
+            eprintln!("Error: only one command line argument is expected");
+            eprintln!("");
+            print_usage();
+        }
+        std::cmp::Ordering::Less => {
+            eprintln!("Error: missing path to the transaction file");
+            eprintln!("");
+            print_usage();
         }
     }
 
