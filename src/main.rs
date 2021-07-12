@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug)]
 enum InputFormatError {
     MissingAmount,
+    NegativeAmount,
 }
 
 impl std::fmt::Display for InputFormatError {
@@ -60,14 +61,14 @@ impl ClientID {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum TransactionType {
     Deposit,
     Withdrawal,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct NewTransaction {
     #[serde(alias = "type")]
     transaction_type: TransactionType,
@@ -78,7 +79,7 @@ struct NewTransaction {
     amount: Decimal,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum AmendmentType {
     Dispute,
@@ -86,7 +87,7 @@ enum AmendmentType {
     Chargeback,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct TransactionAmendment {
     #[serde(alias = "type")]
     amendment_type: AmendmentType,
@@ -96,7 +97,7 @@ struct TransactionAmendment {
     transaction_id: TransactionID,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 enum Record {
     Transaction(NewTransaction),
@@ -113,7 +114,7 @@ impl Record {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 enum RawRecordType {
     Transaction(TransactionType),
@@ -149,12 +150,18 @@ impl std::convert::TryFrom<RawRecord> for Record {
                 }))
             }
             RawRecordType::Transaction(transaction_type) => match raw_record.amount {
-                Some(amount) => Ok(Record::Transaction(NewTransaction {
-                    transaction_type,
-                    amount,
-                    client_id: raw_record.client_id,
-                    transaction_id: raw_record.transaction_id,
-                })),
+                Some(amount) => {
+                    if amount < Decimal::zero() {
+                        Err(InputFormatError::NegativeAmount)
+                    } else {
+                        Ok(Record::Transaction(NewTransaction {
+                            transaction_type,
+                            amount,
+                            client_id: raw_record.client_id,
+                            transaction_id: raw_record.transaction_id,
+                        }))
+                    }
+                }
                 None => Err(InputFormatError::MissingAmount),
             },
         }
@@ -705,6 +712,146 @@ mod test {
                 held: dec!(12),
                 locked: false
             }
+        );
+    }
+
+    fn get_transactions(input_csv: &str) -> Vec<Record> {
+        CsvReader::from_reader(input_csv.as_bytes()).collect::<Vec<_>>()
+    }
+
+    fn extract_type(record: &Record) -> RawRecordType {
+        match record {
+            Record::Transaction(transaction) => {
+                RawRecordType::Transaction(transaction.transaction_type)
+            }
+            Record::Amendment(amendment) => RawRecordType::Amendment(amendment.amendment_type),
+        }
+    }
+
+    #[test]
+    fn test_csv_parsing_happy_cases() {
+        let input_csv = r#"type, client, tx, amount
+            deposit   , 1,  1, 10,
+            withdrawal, 1,  2, 20,
+            dispute   , 2,  4
+            resolve   , 3,  5
+            chargeback, 4, 10
+        "#;
+
+        let transactions = get_transactions(input_csv);
+
+        assert_eq!(transactions.len(), 5);
+        assert_eq!(
+            transactions[0],
+            Record::Transaction(NewTransaction {
+                transaction_type: TransactionType::Deposit,
+                amount: dec!(10),
+                client_id: ClientID::new(1),
+                transaction_id: TransactionID::new(1)
+            })
+        );
+        assert_eq!(
+            transactions[1],
+            Record::Transaction(NewTransaction {
+                transaction_type: TransactionType::Withdrawal,
+                amount: dec!(20),
+                client_id: ClientID::new(1),
+                transaction_id: TransactionID::new(2)
+            })
+        );
+        assert_eq!(
+            transactions[2],
+            Record::Amendment(TransactionAmendment {
+                amendment_type: AmendmentType::Dispute,
+                client_id: ClientID::new(2),
+                transaction_id: TransactionID::new(4)
+            })
+        );
+        assert_eq!(
+            transactions[3],
+            Record::Amendment(TransactionAmendment {
+                amendment_type: AmendmentType::Resolve,
+                client_id: ClientID::new(3),
+                transaction_id: TransactionID::new(5)
+            })
+        );
+        assert_eq!(
+            transactions[4],
+            Record::Amendment(TransactionAmendment {
+                amendment_type: AmendmentType::Chargeback,
+                client_id: ClientID::new(4),
+                transaction_id: TransactionID::new(10)
+            })
+        );
+    }
+
+    #[test]
+    fn test_csv_parsing_tricky_cases() {
+        let header_only_csv = "type, client, tx, amount";
+        assert!(get_transactions(header_only_csv).is_empty());
+        let header_with_line_break_csv = "type, client, tx, amount\n";
+        assert!(get_transactions(header_with_line_break_csv).is_empty());
+
+        let trailing_comma_transactions_csv = r#"type, client, tx, amount
+            deposit, 1, 1, 1.0,
+            dispute, 1, 1, 
+            resolve, 1, 1, ,"#;
+        let trailing_comma_transactions = get_transactions(trailing_comma_transactions_csv);
+        assert_eq!(trailing_comma_transactions.len(), 3);
+        assert_eq!(
+            trailing_comma_transactions
+                .iter()
+                .map(extract_type)
+                .collect::<Vec<_>>(),
+            vec![
+                RawRecordType::Transaction(TransactionType::Deposit),
+                RawRecordType::Amendment(AmendmentType::Dispute),
+                RawRecordType::Amendment(AmendmentType::Resolve)
+            ]
+        );
+
+        let trailing_comma_header_csv = r#"type, client, tx, amount,
+            deposit, 1, 1, 1.0"#;
+        let trailing_comma_header_transactions = get_transactions(trailing_comma_header_csv);
+        assert!(trailing_comma_header_transactions.is_empty());
+
+        let dispute_with_amount_csv = r#"type, client, tx, amount
+            dispute, 3, 5, 8"#;
+        let dispute_with_amount_transactions = get_transactions(dispute_with_amount_csv);
+        assert_eq!(dispute_with_amount_transactions.len(), 1);
+        assert_eq!(
+            dispute_with_amount_transactions[0],
+            Record::Amendment(TransactionAmendment {
+                amendment_type: AmendmentType::Dispute,
+                client_id: ClientID::new(3),
+                transaction_id: TransactionID::new(5)
+            })
+        );
+
+        let withdrawal_without_amount_csv = r#"type, client, tx, amount
+            withdrawal, 1, 2"#;
+        assert!(get_transactions(withdrawal_without_amount_csv).is_empty());
+
+        let negative_amount_csv = r#"type, client, tx, amount
+            deposit, 1, 2, -3"#;
+        assert!(get_transactions(negative_amount_csv).is_empty());
+
+        let invalid_client_id_csv = r#"type, client, tx, amount
+        deposit, banana, 2, -3"#;
+        assert!(get_transactions(invalid_client_id_csv).is_empty());
+
+        // Currently we error on the first line with invalid formatting. We should be able to do better, but let's
+        // say this is good enough for now.
+        let csv_with_invalid_entry = r#"type, client, tx, amount
+            deposit, 1, 1, 12
+            banana
+            withdrawal, 1, 2, 10
+        "#;
+        let transactions_with_invalid_entry = get_transactions(csv_with_invalid_entry);
+        assert_eq!(transactions_with_invalid_entry.len(), 1);
+        assert_eq!(
+            extract_type(&transactions_with_invalid_entry[0]),
+            RawRecordType::Transaction(TransactionType::Deposit)
         );
     }
 }
