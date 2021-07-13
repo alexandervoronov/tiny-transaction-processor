@@ -74,8 +74,8 @@ To disable all the logging use `RUST_LOG=off`.
 
 ### Type system
 
-As there are two types of transactions---to adjust account balance and to dispute those
-adjustments--- _Transaction_ is implemented as a `enum` of either _Transfer_ (for deposits and withdrawals)
+As there are two major classes of transactions, _Transaction_ is implemented as a `enum` of either 
+_Transfer_ (for deposits and withdrawals)
 or _Amendment_ (for disputes, resolutions and chargebacks). I'm sure there are better terms for these two classes,
 but being not a native speaker in English and not having background in finance, these are the best I was able to
 come up with.
