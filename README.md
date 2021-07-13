@@ -107,7 +107,8 @@ _Error_ trait and provide the conventional information expected from errors.
 
 The described assumptions are covered by tests. As a trade-off towards conciseness/readability of the tests,
 I didn't test for exact for exact errors being reported. In a production system would in order to have more
-confidence that the test covers the intended code path.
+confidence that the test covers the intended code path. All the tests for both CSV parsing and transaction
+processing are in _tests_ folder and can be run with `cargo test`.
 
 ### Thoughts on performance and scaling
 
@@ -125,4 +126,4 @@ scale it by having multiple copies (multiple threads or even instances) and shar
 The main concern for high-throughput is the number of _Transfers_ we need to store for potential disputes.
 The amount representation by _Decimal_ takes 16 bytes. The other fields + hashmap overhead will probably bring
 us to ≈64 bytes per record, which means 64 GB machine will be able to accommodate about 1 billion transactions.
-Unless we have convenient dispute time deadlines, we may need to look into storing transactions in a database.
+Unless we have convenient dispute-time deadlines, we may need to look into storing transactions in a database.
