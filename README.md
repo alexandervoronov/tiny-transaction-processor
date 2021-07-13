@@ -5,7 +5,15 @@ a list of transactions and outputs the resulting state of the accounts. Supporte
 are deposits and withdrawals. Those can be disputed with a follow-up settlement of the dispute
 with either a resolution or a chargeback.
 
-An example input:
+Checkout and run:
+
+```
+git clone https://github.com/alexandervoronov/tiny-transaction-processor.git
+cd tiny-transaction-processor
+cargo run --release -- {path-to-transaction-file}
+```
+
+An example CSV input:
 
 ```
 type,       client, tx, amount
@@ -39,17 +47,18 @@ client,available,held,total,locked
 ## Usage
 
 ```
-tiny-transaction-processor <path-to-transaction-file>
+tiny-transaction-processor {path-to-transaction-file}
 ```
 
 Tiny transaction processor takes a single argument, which is the path to the CSV file with the list of
-transactions. The output of the client state is printed to `stdout` and all the errors are logged into `stderr`.
-Transactions that failed to parse or that can't be processed are ignored but don't prevent the remaining
-transactions to be processed.
+transactions. The output of the client account state is printed to `stdout` and all the errors
+are logged into `stderr`.
+Transactions that failed to parse or that can't be processed are ignored but don't stop the processing of
+the remaining transactions.
 
 ### Logging verbosity
 
-Log level is controlled via environment variable `RUST_LOG`. The default level is `info` as
+Log level is controlled via environment variable `RUST_LOG`. The default log level is `info` as
 the tiny transaction processor doesn't log much. All the errors related to CSV parsing or
 transaction processing are logged at the `error` level.
 
@@ -81,28 +90,29 @@ The format correctness checks are mostly carried by [serde](https://crates.io/cr
 
 ### Errors
 
-There are two main error types. _InputFormatError_ covers CSV parsing errors and the issues with missing/invalid
-amount for _Transfers_. _ProcessingError_ contains all exceptional cases supported by the Tiny transaction
+There are two main error types. _InputFormatError_ covers CSV parsing errors and the issues of missing or invalid
+amount for _Transfers_. _ProcessingError_ covers exception cases supported by the tiny transaction
 processor like trying two withdraw more than available mount or duplicated chargeback of the same transaction.
 There is no pretty formatting for the errors yet the names of the errors are intended to be descriptive and
-sufficient for analysis and development purposes. In the future the error types could be improved to implement
+sufficient for analysis and development purposes. The error types could be improved to implement
 _Error_ trait and provide the conventional information expected from errors.
 
-### Assumptions and rules
+### Processing assumptions and additional rules
 
-- A second dispute of a transaction that is already in dispute is ignored. This prevents from unnecessarily
+- The second dispute of a transaction that is already in dispute is ignored. This prevents from unnecessarily
   doubling the held amount. If the dispute has been resolved, the transaction can be disputed again.
   Disputes of a charged back transaction are also ignored.
-- _Transfers_ that reuse a transaction ID of previous _Transfers_ are ignored.
-- If an _Amendment_ has a client ID that doesn't match one in the disputed transaction, it's ignored.
-- If an _Amendment_ has an amount specified, it still counts as a valid amendment, yet the amount is ignored.
+- _Transfer_ that reuses a transaction ID of one of the previous _Transfers_ is ignored.
+- If an _Amendment_ has a client ID that doesn't match the one in the disputed transaction, it's ignored.
+- If an _Amendment_ has an amount specified, it still counts as a valid transaction, yet the amount value
+  is ignored.
 - _Disputes_ of both _Deposits_ and _Withdrawals_ will reduce the available balance. It feels unintuitive for
   _Withdrawals_, and if we had double-entry transactions, probably only the credited account should have been
-  affected. With the given format I assumed that the money were questionably spent and as there might be a party
+  affected. With the given format I assumed that the money were questionably spent and as there might be somebody
   in the world that would like to be compensated, we hold the given amount until further information. Which also
-  seems to be inline with the specification.
+  seems to be in line with the specification.
 - When account is locked after a _Chargeback_, all the further _Deposits_ and _Withdrawals_ are ignored. There is
-  no way an account can be unlocked. _Disputes_ of other transactions are allowed.
+  no way to unlock a locked account. _Disputes_ and further _Chargebacks_ of other transactions are allowed.
 - It a _Transfer_ was ignored, it also can't be disputed. The error will be reported as unfamiliar transaction.
 
 The described assumptions are covered by tests. As a trade-off towards conciseness/readability of the tests,
@@ -113,17 +123,18 @@ processing are in _tests_ folder and can be run with `cargo test`.
 ### Thoughts on performance and scaling
 
 While I don't have any actual profiling results, I can share some thoughts on further maintenance/scaling
-of the Tiny transaction processor.
+of the tiny transaction processor.
 
-The code is organised so that input and transaction processing are independent, so they also can be profiled
+The code is organised in a way that input and transaction processing are independent, so they also can be profiled
 and tuned independently. For the purpose of such profiling, it will be nice to have a snapshot of real-world
 data to understand the number of transaction for one day/week, ratio between _Transfers_ and _Amendments_, and
 the nature and the frequency of client account balance queries.
 
-If we use the Tiny transaction processor in online mode and need higher throughput, we can quite naturally
-scale it by having multiple copies (multiple threads or even instances) and shard by client ID.
+If we use the tiny transaction processor in online mode and need higher throughput, we can quite naturally
+scale it by having multiple instances of the tiny transaction processor (separate threads, processes or
+even independent machines) and shard between them by client ID.
 
-The main concern for high-throughput is the number of _Transfers_ we need to store for potential disputes.
-The amount representation by _Decimal_ takes 16 bytes. The other fields + hashmap overhead will probably bring
+The main concern for high- hroughput is the number of _Transfers_ we need to store for potential disputes.
+The amount representation by the _Decimal_ takes 16 bytes. The other fields + hashmap overhead will probably bring
 us to ≈64 bytes per record, which means 64 GB machine will be able to accommodate about 1 billion transactions.
 Unless we have convenient dispute-time deadlines, we may need to look into storing transactions in a database.
