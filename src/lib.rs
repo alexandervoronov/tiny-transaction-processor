@@ -268,9 +268,9 @@ impl<'a> Serialize for AccountWithClientID<'a> {
 
         let mut state = serializer.serialize_struct("AccountWithClientID", 5)?;
         state.serialize_field("client", &self.client_id)?;
-        state.serialize_field("available", &self.account.available)?;
-        state.serialize_field("held", &self.account.held)?;
-        state.serialize_field("total", &self.account.total())?;
+        state.serialize_field("available", &self.account.available.normalize())?;
+        state.serialize_field("held", &self.account.held.normalize())?;
+        state.serialize_field("total", &self.account.total().normalize())?;
         state.serialize_field("locked", &self.account.locked)?;
         state.end()
     }

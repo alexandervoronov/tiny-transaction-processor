@@ -31,7 +31,7 @@ The outcome of these transactions will be the following:
 
 ```
 client,available,held,total,locked
-42,8.00,0.00,8.00,true
+42,8,0,8,true
 24,12.8,15,27.8,false
 23,16,0,16,false
 ```
