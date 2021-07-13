@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         std::cmp::Ordering::Greater => {
             error!("Only one command line argument is expected");
-            eprintln!("");
+            eprintln!();
             print_usage();
 
             Err(std::io::Error::from(std::io::ErrorKind::InvalidInput).into())
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             error!(
                 "Missing argument! Please provide a path to the CSV file containing transactions"
             );
-            eprintln!("");
+            eprintln!();
             print_usage();
 
             Err(std::io::Error::from(std::io::ErrorKind::InvalidInput).into())

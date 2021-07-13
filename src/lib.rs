@@ -223,7 +223,7 @@ impl<CsvInput: std::io::Read> CsvReader<CsvInput> {
             .next()
             .map(|result| {
                 result
-                    .map_err(|err| err.into())
+                    .map_err(InputFormatError::from)
                     .and_then(Transaction::try_from)
             })
     }
@@ -232,11 +232,11 @@ impl<CsvInput: std::io::Read> CsvReader<CsvInput> {
 impl<CsvInput: std::io::Read> std::iter::Iterator for CsvReader<CsvInput> {
     type Item = Transaction;
 
-    fn next(self: &mut Self) -> Option<Transaction> {
+    fn next(&mut self) -> Option<Transaction> {
         while let Some(result) = self.get_next_transaction() {
             match result {
                 Ok(transaction) => return Some(transaction),
-                Err(err) => error!("CSV parsing error: {:?}", &err)
+                Err(err) => error!("CSV parsing error: {:?}", &err),
             }
         }
         None
