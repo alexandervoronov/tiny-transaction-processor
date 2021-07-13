@@ -174,6 +174,9 @@ fn test_resolve() {
     // Second resolve of the same transaction is an error and doesn't change the state
     assert!(processor.process(&resolve_deposit).is_err());
     assert_eq!(initial_state, *processor.accounts.get(&client_id).unwrap());
+
+    // But the transaction can be disputed again after the resolution
+    assert!(processor.process(&dispute_deposit).is_ok());
 }
 
 #[test]
